@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wp-draft-publish"
+version = "0.1.0"
+description = "Publish Markdown / code files (and Obsidian notes) to WordPress as drafts via the REST API."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Takumi Oda" }]
+keywords = ["wordpress", "markdown", "obsidian", "cli", "rest-api", "draft", "blogging"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Environment :: Console",
+    "Topic :: Internet :: WWW/HTTP :: Site Management",
+]
+dependencies = [
+    "requests>=2.31",
+    "markdown>=3.5",
+    "python-frontmatter>=1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/xiaotiantakumi/wp-draft-publish"
+Repository = "https://github.com/xiaotiantakumi/wp-draft-publish"
+Issues = "https://github.com/xiaotiantakumi/wp-draft-publish/issues"
+
+[project.scripts]
+wp-draft-publish = "wp_publish:main"
+
+[tool.setuptools]
+py-modules = ["wp_publish"]
