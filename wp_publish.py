@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["requests>=2.31", "markdown>=3.5", "python-frontmatter>=1.0"]
+# dependencies = ["requests>=2.31", "markdown>=3.5", "python-frontmatter>=1.0", "beautifulsoup4>=4.12"]
 # ///
 """Publish Markdown / code files to WordPress as drafts via the REST API.
 
@@ -43,6 +43,7 @@ from pathlib import Path
 import frontmatter
 import markdown
 import requests
+from bs4 import BeautifulSoup, NavigableString
 
 MARKDOWN_EXTS = {".md", ".markdown", ".mdx"}
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".avif"}
@@ -59,16 +60,11 @@ EXT_LANG = {
     ".swift": "swift", ".xml": "xml", ".txt": "text",
 }
 
-CODE_BLOCK_RE = re.compile(r"<pre><code(?P<attrs>[^>]*)>(?P<body>.*?)</code></pre>", re.DOTALL)
 LANG_CLASS_RE = re.compile(r'class="language-([^"]+)"')
 
 # image refs in Markdown source
 OBSIDIAN_IMG_RE = re.compile(r"!\[\[([^\]\|]+?)(?:\|([^\]]*))?\]\]")
 MD_IMG_RE = re.compile(r'!\[([^\]]*)\]\(\s*<?([^)\s"\'<>]+)>?(?:\s+"[^"]*")?\s*\)')
-# <img> in rendered HTML (optionally wrapped in a lone <p>)
-HTML_IMG_RE = re.compile(r"(?:<p>\s*)?<img\b[^>]*?>(?:\s*</p>)?", re.IGNORECASE)
-SRC_RE = re.compile(r'src="([^"]+)"')
-ALT_RE = re.compile(r'alt="([^"]*)"')
 
 
 # --------------------------------------------------------------------------- #
@@ -85,38 +81,90 @@ def code_block(escaped_body: str, lang: str, style: str) -> str:
             "<!-- /wp:code -->")
 
 
-def render_markdown(body: str, code_style: str) -> str:
+def md_to_html(body: str) -> str:
     md = markdown.Markdown(
         extensions=["fenced_code", "tables", "sane_lists", "attr_list"],
         output_format="html5",
     )
-    out = md.convert(body)
-
-    def repl(m: re.Match) -> str:
-        lang_match = LANG_CLASS_RE.search(m.group("attrs"))
-        lang = lang_match.group(1) if lang_match else ""
-        return code_block(m.group("body"), lang, code_style)
-
-    return CODE_BLOCK_RE.sub(repl, out)
+    return md.convert(body)
 
 
-def wrap_images(html_str: str, url_to_id: dict) -> str:
-    """Turn <img> tags into Gutenberg wp:image blocks (with media id when known)."""
-    def repl(m: re.Match) -> str:
-        tag = m.group(0)
-        s, a = SRC_RE.search(tag), ALT_RE.search(tag)
-        src = s.group(1) if s else ""
-        alt = a.group(1) if a else ""
-        mid = url_to_id.get(src)
-        if mid:
-            return (f'<!-- wp:image {{"id":{mid},"sizeSlug":"large"}} -->\n'
-                    f'<figure class="wp-block-image size-large">'
-                    f'<img src="{src}" alt="{alt}" class="wp-image-{mid}"/></figure>\n'
-                    "<!-- /wp:image -->")
-        return ("<!-- wp:image -->\n"
-                f'<figure class="wp-block-image"><img src="{src}" alt="{alt}"/></figure>\n'
+def _img_block(img, url_to_id: dict) -> str:
+    src, alt = img.get("src", ""), img.get("alt", "")
+    mid = url_to_id.get(src)
+    if mid:
+        return (f'<!-- wp:image {{"id":{mid},"sizeSlug":"large"}} -->\n'
+                f'<figure class="wp-block-image size-large">'
+                f'<img src="{src}" alt="{alt}" class="wp-image-{mid}"/></figure>\n'
                 "<!-- /wp:image -->")
-    return HTML_IMG_RE.sub(repl, html_str)
+    return ("<!-- wp:image -->\n"
+            f'<figure class="wp-block-image"><img src="{src}" alt="{alt}"/></figure>\n'
+            "<!-- /wp:image -->")
+
+
+def _list_block(el) -> str:
+    ordered = el.name == "ol"
+    items = [
+        "<!-- wp:list-item -->\n"
+        f"<li>{li.decode_contents().strip()}</li>\n"
+        "<!-- /wp:list-item -->"
+        for li in el.find_all("li", recursive=False)
+    ]
+    tag = "ol" if ordered else "ul"
+    attrs = ' {"ordered":true}' if ordered else ""
+    return (f"<!-- wp:list{attrs} -->\n"
+            f'<{tag} class="wp-block-list">' + "".join(items) + f"</{tag}>\n"
+            "<!-- /wp:list -->")
+
+
+def _convert_el(el, url_to_id: dict, code_style: str) -> str:
+    """Convert one top-level rendered-HTML node into Gutenberg block markup."""
+    if isinstance(el, NavigableString):
+        text = str(el).strip()
+        return f"<!-- wp:paragraph -->\n<p>{text}</p>\n<!-- /wp:paragraph -->" if text else ""
+    name = el.name
+    if name == "p":
+        imgs = el.find_all("img")
+        if imgs and not el.get_text(strip=True):
+            return "\n\n".join(_img_block(i, url_to_id) for i in imgs)
+        return f"<!-- wp:paragraph -->\n{el}\n<!-- /wp:paragraph -->"
+    if name in ("h1", "h2", "h3", "h4", "h5", "h6"):
+        level = int(name[1])
+        classes = el.get("class", [])
+        if "wp-block-heading" not in classes:
+            el["class"] = classes + ["wp-block-heading"]
+        attrs = "" if level == 2 else f' {{"level":{level}}}'
+        return f"<!-- wp:heading{attrs} -->\n{el}\n<!-- /wp:heading -->"
+    if name in ("ul", "ol"):
+        return _list_block(el)
+    if name == "pre":
+        code = el.find("code")
+        body = code.decode_contents() if code else el.decode_contents()
+        lang_match = LANG_CLASS_RE.search(str(code)) if code else None
+        return code_block(body, lang_match.group(1) if lang_match else "", code_style)
+    if name == "blockquote":
+        inner = "".join(_convert_el(c, url_to_id, code_style) for c in el.children).strip()
+        return ('<!-- wp:quote -->\n'
+                f'<blockquote class="wp-block-quote">{inner}</blockquote>\n'
+                '<!-- /wp:quote -->')
+    if name == "img":
+        return _img_block(el, url_to_id)
+    if name == "table":
+        return ('<!-- wp:table -->\n'
+                f'<figure class="wp-block-table">{el}</figure>\n'
+                '<!-- /wp:table -->')
+    if name == "hr":
+        return ('<!-- wp:separator -->\n'
+                '<hr class="wp-block-separator has-alpha-channel-opacity"/>\n'
+                '<!-- /wp:separator -->')
+    return str(el)
+
+
+def html_to_blocks(html_str: str, url_to_id: dict, code_style: str) -> str:
+    """Render markdown HTML into a clean, fully block-delimited Gutenberg document."""
+    soup = BeautifulSoup(html_str, "html.parser")
+    parts = (_convert_el(el, url_to_id, code_style) for el in soup.children)
+    return "\n\n".join(p for p in (s.strip() for s in parts) if p)
 
 
 def extract_title(meta: dict, body: str, fallback: str) -> tuple[str, str]:
@@ -327,7 +375,7 @@ def build_post(path: Path, wp: WP | None, args) -> dict:
             detect_images(body, base_dir, args.attachments_dir)
         else:
             body, url_to_id, ordered = upload_images(body, base_dir, wp, args.attachments_dir)
-        content = wrap_images(render_markdown(body, args.code_style), url_to_id)
+        content = html_to_blocks(md_to_html(body), url_to_id, args.code_style)
     else:
         lang = args.lang or EXT_LANG.get(path.suffix.lower(), "")
         title = path.name

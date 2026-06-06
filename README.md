@@ -19,6 +19,7 @@ It does **not** update existing posts by design: if you want to change something
 ## Features
 
 - 📝 Markdown → WordPress (frontmatter, headings, lists, tables, blockquotes, code fences)
+- 🧱 Outputs **clean, fully block-delimited Gutenberg markup** (paragraph/heading/list/quote/code/image) — opens as native blocks, no freeform/Classic blob
 - 💻 Code-file mode: point at `main.py` / `app.ts` / `script.sh` and the whole file becomes one code block
 - 🖼️ Image upload + insertion (`![](…)` and Obsidian `![[…]]`), de-duplicated per run
 - 🏷️ Tags & categories by **name** (resolved if they exist, created if not)
@@ -189,8 +190,10 @@ and a **preview URL** (`{WP_URL}/?p={id}&preview=true`). Open it while logged in
 ## How it works
 
 `POST {WP_URL}/wp-json/wp/v2/posts` with HTTP Basic auth (username + Application Password). Markdown
-is rendered with [Python-Markdown](https://python-markdown.github.io/); code fences become Gutenberg
-`wp:code` blocks; images are uploaded via `…/wp/v2/media`; tags/categories via `…/wp/v2/tags|categories`.
+is rendered with [Python-Markdown](https://python-markdown.github.io/) and converted into clean,
+fully block-delimited Gutenberg markup (paragraph/heading/list/quote/code/image) so the post opens as
+native blocks — no freeform/Classic blob. Images are uploaded via `…/wp/v2/media`; tags/categories via
+`…/wp/v2/tags|categories`.
 
 ## License
 
